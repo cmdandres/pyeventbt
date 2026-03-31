@@ -417,7 +417,153 @@ class Strategy:
     
     
     ############################# CREATION OF OBJECTS AND LAUNCH LIVE EXECUTION #############################
+    def run_live_portfolio(
+        self,
+        mt5_configuration: Mt5PlatformConfig,
+        strategies: list,
+        heartbeat: float = 0.5,
+        ) -> None:
+        """
+        Lanza múltiples estrategias en live sobre un único terminal MT5.
+
+        Args:
+            mt5_configuration: Credenciales MT5 (compartidas por todas las estrategias)
+            strategies: Lista de dicts con la configuración de cada estrategia:
+                [
+                    {
+                        "strategy_id": "1001",
+                        "symbols": ["BTCUSD"],
+                        "initial_capital": 100000.0,
+                    },
+                    {
+                        "strategy_id": "1002",
+                        "symbols": ["XAUUSD"],
+                        "initial_capital": 100000.0,
+                    },
+                ]
+            heartbeat: Intervalo de polling en segundos (default: 0.5)
+
+        Arquitectura:
+            - Un único DATA_PROVIDER (una conexión MT5, todos los símbolos)
+            - Un ExecutionEngine por estrategia (magic_number = strategy_id)
+            - Un Portfolio y PortfolioHandler por estrategia
+        """
+        self.EVENTS_QUEUE = Queue()
+        trading_context = TypeContext.LIVE
+        self.__strategy_timeframes.sort()
+
+        # Recopilar todos los símbolos de todas las estrategias
+        all_symbols = []
+        for strat in strategies:
+            for sym in strat.get("symbols", []):
+                if sym not in all_symbols:
+                    all_symbols.append(sym)
+
+        # DATA_PROVIDER compartido — una sola conexión MT5
+        data_config = MT5LiveDataConfig(
+            tradeable_symbol_list=all_symbols,
+            timeframes_list=self.__strategy_timeframes,
+            plaform_config=mt5_configuration,
+        )
+        DATA_PROVIDER = DataProvider(self.EVENTS_QUEUE, data_config, trading_context)
+
+        # Estrategia principal (primera de la lista) — usa el TradingDirector base
+        primary = strategies[0]
+        primary_id = primary["strategy_id"]
+
+        primary_exec_config = MT5LiveExecutionConfig(magic_number=int(primary_id))
+        PRIMARY_EXECUTION_ENGINE = ExecutionEngine(self.EVENTS_QUEUE, DATA_PROVIDER, primary_exec_config)
+
+        PRIMARY_PORTFOLIO = Portfolio(
+            initial_balance=primary.get("initial_capital", 100000.0),
+            execution_engine=PRIMARY_EXECUTION_ENGINE,
+            trading_context=trading_context,
+            base_timeframe=self.__strategy_timeframes[0],
+        )
+
+        primary_modules = Modules(
+            TRADING_CONTEXT=trading_context,
+            DATA_PROVIDER=DATA_PROVIDER,
+            EXECUTION_ENGINE=PRIMARY_EXECUTION_ENGINE,
+            PORTFOLIO=PRIMARY_PORTFOLIO,
+        )
+
+        primary_signal  = self.__get_signal_engine(primary_id, primary_modules)
+        primary_sizing  = self.__get_sizing_engine(primary_id, primary_modules)
+        primary_risk    = self.__get_risk_engine(primary_id, primary_modules)
+
+        TRADING_SESSION_CONFIG = MT5LiveSessionConfig(
+            symbol_list=all_symbols,
+            heartbeat=heartbeat,
+            platform_config=mt5_configuration,
+        )
+
+        PRIMARY_PORTFOLIO_HANDLER = PortfolioHandler(
+            events_queue=self.EVENTS_QUEUE,
+            sizing_engine=primary_sizing,
+            risk_engine=primary_risk,
+            portfolio=PRIMARY_PORTFOLIO,
+            base_timeframe=self.__strategy_timeframes[0],
+        )
+
+        TRADING_DIRECTOR = TradingDirector(
+            events_queue=self.EVENTS_QUEUE,
+            signal_engine_service=primary_signal,
+            portfolio_handler=PRIMARY_PORTFOLIO_HANDLER,
+            trading_session_config=TRADING_SESSION_CONFIG,
+            modules=primary_modules,
+            run_schedules=self.__run_schedules,
+            hook_service=self.__hooks,
+        )
+
+        # Estrategias adicionales — registrar como slots
+        for strat in strategies[1:]:
+            strat_id = strat["strategy_id"]
+
+            exec_config = MT5LiveExecutionConfig(magic_number=int(strat_id))
+            exec_engine = ExecutionEngine(self.EVENTS_QUEUE, DATA_PROVIDER, exec_config)
+
+            portfolio = Portfolio(
+                initial_balance=strat.get("initial_capital", 100000.0),
+                execution_engine=exec_engine,
+                trading_context=trading_context,
+                base_timeframe=self.__strategy_timeframes[0],
+            )
+
+            slot_modules = Modules(
+                TRADING_CONTEXT=trading_context,
+                DATA_PROVIDER=DATA_PROVIDER,
+                EXECUTION_ENGINE=exec_engine,
+                PORTFOLIO=portfolio,
+            )
+
+            signal_engine = self.__get_signal_engine(strat_id, slot_modules)
+            sizing_engine  = self.__get_sizing_engine(strat_id, slot_modules)
+            risk_engine    = self.__get_risk_engine(strat_id, slot_modules)
+
+            portfolio_handler = PortfolioHandler(
+                events_queue=self.EVENTS_QUEUE,
+                sizing_engine=sizing_engine,
+                risk_engine=risk_engine,
+                portfolio=portfolio,
+                base_timeframe=self.__strategy_timeframes[0],
+            )
+
+            from pyeventbt.trading_director.trading_director import StrategySlot
+            slot = StrategySlot(
+                strategy_id=strat_id,
+                signal_engine=signal_engine,
+                execution_engine=exec_engine,
+                portfolio=portfolio,
+                portfolio_handler=portfolio_handler,
+                modules=slot_modules,
+            )
+            TRADING_DIRECTOR.add_strategy_slot(slot)
+
+        TRADING_DIRECTOR.run()
+
     def run_live(
+
         self,
         mt5_configuration: Mt5PlatformConfig,  
         strategy_id: str = "default",

@@ -24,8 +24,21 @@ from typing import Callable
 import queue
 import time
 import logging
+from dataclasses import dataclass, field
+from typing import List
 
 logger = logging.getLogger("pyeventbt")
+
+@dataclass
+class StrategySlot:
+    """Agrupa los componentes de una estrategia individual dentro del portfolio."""
+    strategy_id:      str
+    signal_engine:    object   # SignalEngineService
+    execution_engine: object   # IExecutionEngine
+    portfolio:        object   # Portfolio
+    portfolio_handler: object  # PortfolioHandler
+    modules:          object   # Modules
+
 
 class TradingDirector():
     
@@ -69,10 +82,19 @@ class TradingDirector():
         self.SCHEDULE_SERVICE = ScheduleService(modules)
         self.HOOK_SERVICE = hook_service
 
+        # Lista de slots adicionales para multi-estrategia (portfolio live)
+        self.strategy_slots: List[StrategySlot] = []
+        self.strategy_slot_map: dict = {}  # strategy_id -> StrategySlot
+
         # Execute a method that configures the type of trading session (backtest or live)
         self._configure_session(trading_session_config)
 
         self.__run_schedules = run_schedules
+
+    def add_strategy_slot(self, slot: 'StrategySlot') -> None:
+        """Registra un slot de estrategia adicional para el portfolio multi-estrategia."""
+        self.strategy_slots.append(slot)
+        self.strategy_slot_map[slot.strategy_id] = slot
 
     # interessant posar una flag que digui si el environment global es backtest o live
     def _configure_session(self, trading_session_config: BaseTradingSessionConfig) -> None:
@@ -99,13 +121,27 @@ class TradingDirector():
         self.PORTFOLIO_HANDLER.process_bar_event(event)  # Updates portfolio values
         self.SCHEDULE_SERVICE.run_scheduled_callbacks(event)
         self.SIGNAL_GENERATOR.generate_signal(event)
+        # Multi-estrategia: iterar sobre slots adicionales
+        for slot in self.strategy_slots:
+            slot.portfolio_handler.process_bar_event(event)
+            slot.signal_engine.generate_signal(event)
 
     def _handle_signal_event(self, event: SignalEvent) -> None:
         self.HOOK_SERVICE.call_callbacks(Hooks.ON_SIGNAL_EVENT, self.MODULES)
-        self.PORTFOLIO_HANDLER.process_signal_event(event)
+        # Multi-estrategia: enrutar al portfolio handler correcto por strategy_id
+        slot = self.strategy_slot_map.get(event.strategy_id)
+        if slot:
+            slot.portfolio_handler.process_signal_event(event)
+        else:
+            self.PORTFOLIO_HANDLER.process_signal_event(event)
 
     def _handle_order_event(self, event: OrderEvent) -> None:
-        self.EXECUTION_ENGINE._process_order_event(event)
+        # Multi-estrategia: usar el execution engine del slot correspondiente
+        slot = self.strategy_slot_map.get(event.strategy_id)
+        if slot:
+            slot.execution_engine._process_order_event(event)
+        else:
+            self.EXECUTION_ENGINE._process_order_event(event)
         self.HOOK_SERVICE.call_callbacks(Hooks.ON_ORDER_EVENT, self.MODULES)
 
     def _handle_fill_event(self, event: FillEvent) -> None:
