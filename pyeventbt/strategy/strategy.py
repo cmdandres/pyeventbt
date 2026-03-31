@@ -516,6 +516,9 @@ class Strategy:
             hook_service=self.__hooks,
         )
 
+        # Filtrar símbolo de la estrategia primaria
+        TRADING_DIRECTOR.set_primary_symbol_list(primary.get("symbols", []))
+
         # Estrategias adicionales — registrar como slots
         for strat in strategies[1:]:
             strat_id = strat["strategy_id"]
@@ -557,6 +560,7 @@ class Strategy:
                 portfolio=portfolio,
                 portfolio_handler=portfolio_handler,
                 modules=slot_modules,
+                symbol_list      = strat.get("symbols", []),
             )
             TRADING_DIRECTOR.add_strategy_slot(slot)
 

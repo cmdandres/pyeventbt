@@ -38,7 +38,7 @@ class StrategySlot:
     portfolio:        object   # Portfolio
     portfolio_handler: object  # PortfolioHandler
     modules:          object   # Modules
-
+    symbol_list:       list = field(default_factory=list)
 
 class TradingDirector():
     
@@ -85,6 +85,7 @@ class TradingDirector():
         # Lista de slots adicionales para multi-estrategia (portfolio live)
         self.strategy_slots: List[StrategySlot] = []
         self.strategy_slot_map: dict = {}  # strategy_id -> StrategySlot
+        self.primary_symbol_list: list = []  # filtro símbolo estrategia primaria
 
         # Execute a method that configures the type of trading session (backtest or live)
         self._configure_session(trading_session_config)
@@ -95,6 +96,9 @@ class TradingDirector():
         """Registra un slot de estrategia adicional para el portfolio multi-estrategia."""
         self.strategy_slots.append(slot)
         self.strategy_slot_map[slot.strategy_id] = slot
+
+    def set_primary_symbol_list(self, symbols: list) -> None:  # ← añadido para multi-estrategia
+        self.primary_symbol_list = symbols
 
     # interessant posar una flag que digui si el environment global es backtest o live
     def _configure_session(self, trading_session_config: BaseTradingSessionConfig) -> None:
@@ -120,11 +124,15 @@ class TradingDirector():
     def _handle_bar_event(self, event: BarEvent) -> None:
         self.PORTFOLIO_HANDLER.process_bar_event(event)  # Updates portfolio values
         self.SCHEDULE_SERVICE.run_scheduled_callbacks(event)
-        self.SIGNAL_GENERATOR.generate_signal(event)
-        # Multi-estrategia: iterar sobre slots adicionales
+        # Filtrar por símbolo para la estrategia primaria
+        if not self.primary_symbol_list or event.symbol in self.primary_symbol_list:
+            self.SIGNAL_GENERATOR.generate_signal(event)
+        # Multi-estrategia: solo enrutar al slot si el símbolo le pertenece
         for slot in self.strategy_slots:
-            slot.portfolio_handler.process_bar_event(event)
-            slot.signal_engine.generate_signal(event)
+            if not slot.symbol_list or event.symbol in slot.symbol_list:
+                slot.portfolio_handler.process_bar_event(event)
+                slot.signal_engine.generate_signal(event)
+
 
     def _handle_signal_event(self, event: SignalEvent) -> None:
         self.HOOK_SERVICE.call_callbacks(Hooks.ON_SIGNAL_EVENT, self.MODULES)
