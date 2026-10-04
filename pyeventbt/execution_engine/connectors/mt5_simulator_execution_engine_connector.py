@@ -164,10 +164,15 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
         """
         # Get the relevant common data
         symbol_info = mt5.symbol_info(symbol)
-        contract_size = symbol_info.trade_contract_size
-        margin_rate = symbol_info.margin_initial
-        margin_ccy = symbol_info.currency_margin
-        
+        if symbol_info is None:
+            contract_size = Decimal("1.0")
+            margin_rate = Decimal("0.0")
+            margin_ccy = "USD"
+        else:
+            contract_size = symbol_info.trade_contract_size
+            margin_rate = symbol_info.margin_initial
+            margin_ccy = symbol_info.currency_margin      
+
         # Margins will be given in margin_ccy of the symb
         if symbol in self.all_fx_symbols:
             # FX formula
@@ -211,14 +216,16 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
             return Decimal('0.0')
         
         symbol_info = mt5.symbol_info(symbol)
+        _contract_size_p = symbol_info.trade_contract_size if symbol_info is not None else Decimal("1.0")
+        _profit_ccy_p    = symbol_info.currency_profit if symbol_info is not None else "USD"
         # FX & CFD formula:  profit = (close_price - open_price) * volume * contract_size - in profit ccy
-        profit = (close_price - entry_price) * volume * symbol_info.trade_contract_size
+        profit = (close_price - entry_price) * volume * _contract_size_p
 
         if entry_type == "SELL":
             profit = -profit
         
         # Convert the profit to the account currency
-        return Utils.convert_currency_amount_to_another_currency(amount=profit, from_ccy=symbol_info.currency_profit, to_ccy=self.account_currency, data_provider=self.DATA_PROVIDER)
+        return Utils.convert_currency_amount_to_another_currency(amount=profit, from_ccy=_profit_ccy_p, to_ccy=self.account_currency, data_provider=self.DATA_PROVIDER)
 
     def _compute_commission_in_account_ccy(self, symbol: str, volume: Decimal, trade_price: Decimal) -> Decimal:
         """
@@ -241,7 +248,8 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
         if symbol in self.all_fx_symbols:
             notional_commission = volume * Decimal('2.5')
         elif symbol in self.all_commodities_symbols:
-            notional_commission = Decimal(str(symbol_info.trade_contract_size)) * volume * trade_price * Decimal('0.000025')
+            _cs_c = symbol_info.trade_contract_size if symbol_info is not None else Decimal("1.0")
+            notional_commission = Decimal(str(_cs_c)) * volume * trade_price * Decimal('0.000025')
         elif symbol == "NI225":
             notional_commission = volume * 35
         elif symbol == "WS30":
@@ -257,7 +265,10 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
             notional_commission = volume * Decimal('0.02')  # 0.02 USD per lot
         
         # Convert the notional commission to the account currency and return it as a positive value
-        commission = Utils.convert_currency_amount_to_another_currency(amount=notional_commission, from_ccy=symbol_info.currency_margin, to_ccy=self.account_currency, data_provider=self.DATA_PROVIDER)
+        #commission = Utils.convert_currency_amount_to_another_currency(amount=notional_commission, from_ccy=symbol_info.currency_margin, to_ccy=self.account_currency, data_provider=self.DATA_PROVIDER)
+        #return abs(commission)
+        _margin_ccy_c = symbol_info.currency_margin if symbol_info is not None else "USD"
+        commission = Utils.convert_currency_amount_to_another_currency(amount=notional_commission, from_ccy=_margin_ccy_c, to_ccy=self.account_currency, data_provider=self.DATA_PROVIDER)
         return abs(commission)
 
     def _check_stop_loss_is_valid(self, signal_type: SignalType, sl: float, intended_fill_price: float) -> bool:
@@ -331,14 +342,14 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
         """
         symbol = order_event.symbol
         symbol_info = mt5.symbol_info(symbol)
-        
+        _vol_min = symbol_info.volume_min if symbol_info is not None else Decimal("0.01")
         # Check that the desired trade volume can actually be traded (symbols have minimum values)
-        if order_event.volume < symbol_info.volume_min:
-            logger.warning(f"{order_event.time_generated} - Invalid volume: {order_event.volume}. It should be at least {symbol_info.volume_min}")
+        if order_event.volume < _vol_min:
+            logger.warning(f"{order_event.time_generated} - Invalid volume: {order_event.volume}. It should be at least {_vol_min}")
             return False
         else:
             return True
-
+        
     def _check_if_sl_tp_hit(self, bar_event: BarEvent) -> None:
         """
         Checks if any stop loss or take profit has been hit in the symbol of the BarEvent and generates a fill event, for every order, if they have.
@@ -891,8 +902,10 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
             return 0
         
         # Check that the desired trade volume can actually be traded (symbols have minimum values)
-        if volume < mt5.symbol_info(symbol).volume_min:
-            logger.error(f"{time_in_datetime} - Invalid volume: {volume}. It should be at least {mt5.symbol_info(symbol).volume_min}")
+        _sinfo_vm = mt5.symbol_info(symbol)
+        _vol_min_vm = _sinfo_vm.volume_min if _sinfo_vm is not None else Decimal("0.01")
+        if volume < _vol_min_vm:
+            logger.error(f"{time_in_datetime} - Invalid volume: {volume}. It should be at least {_vol_min_vm}")
             return 0
         
         # Check the trade values are valid
@@ -1243,7 +1256,7 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
         #     return 0
         
         # Check if the new SL and TP are valid
-        if not self._check_stop_loss_is_valid(signal_type="BUY" if position.type == 0 else "SELL", sl=new_sl, intended_fill_price=position.price_open):
+        if not self._check_stop_loss_is_valid(signal_type="BUY" if position.type == 0 else "SELL", sl=new_sl, intended_fill_price=position.price_current):
             logger.error(f"{time_in_datetime} - Invalid STOP_LOSS: {new_sl:.5f} for {position.symbol} at {position.price_open:.5f}")
             new_sl = Decimal('0.0')
         
@@ -1390,4 +1403,5 @@ class Mt5SimulatorExecutionEngineConnector(IExecutionEngine):
     
     def _get_symbol_min_volume(self, symbol: str) -> Decimal:
         """Get symbol min volume"""
-        return mt5.symbol_info(symbol).volume_min
+        _sinfo_ret = mt5.symbol_info(symbol)
+        return _sinfo_ret.volume_min if _sinfo_ret is not None else Decimal("0.01")

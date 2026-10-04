@@ -136,12 +136,22 @@ class QuantdleDataUpdater:
         spread_column: str
     ) -> None:
         """Update existing CSV file with missing data."""
-        # Read existing CSV efficiently with Polars
-        existing_df = pl.read_csv(
-            csv_file,
-            has_header=False,
-            new_columns=["date", "time", "open", "high", "low", "close", "tickvol", "volume", "spread"]
-        )
+        # Read existing CSV — handle both files with and without header row
+        _peek = pl.read_csv(csv_file, has_header=True, n_rows=1)
+        _has_header = _peek.columns[0].lower() in ("date", "datetime", "time")
+        if _has_header:
+            existing_df = pl.read_csv(csv_file, has_header=True).rename(
+                {c: n for c, n in zip(
+                    _peek.columns,
+                    ["date", "time", "open", "high", "low", "close", "tickvol", "volume", "spread"]
+                ) if c != n}
+            )
+        else:
+            existing_df = pl.read_csv(
+                csv_file,
+                has_header=False,
+                new_columns=["date", "time", "open", "high", "low", "close", "tickvol", "volume", "spread"]
+            )
         
         # Parse datetime from date + time columns
         existing_df = existing_df.with_columns([
@@ -243,7 +253,7 @@ class QuantdleDataUpdater:
             
             # Download data from Quantdle directly as Polars
             df = self.client.download_data(
-                symbol=[symbol],  # Quantdle accepts list
+                symbol=symbol,
                 timeframe=quantdle_timeframe,
                 start_date=start_date.strftime('%Y-%m-%d'),
                 end_date=end_date.strftime('%Y-%m-%d'),

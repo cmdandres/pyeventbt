@@ -84,8 +84,11 @@ class CSVDataProvider(IDataProvider):
         self.complete_symbol_data_timeframes: dict[str, dict[str, pl.DataFrame]] = {}
         self.latest_index_timeframes: dict[str, dict[str, datetime]] = {symbol: {} for symbol in self.symbol_list}
 
-        # construct the symbol_digits dict cache
-        self.symbol_digits: dict[str, int] = {symbol: mt5.symbol_info(symbol).digits for symbol in self.symbol_list}     
+        # construct the symbol_digits dict cache    
+        self.symbol_digits: dict[str, int] = {
+            symbol: (mt5.symbol_info(symbol).digits if mt5.symbol_info(symbol) is not None else 5)
+            for symbol in self.symbol_list
+        }
 
         # prepare caches for fast timeframe‐checks
         self._base_timestamps: dict[str, list[datetime]] = {}
@@ -198,7 +201,11 @@ class CSVDataProvider(IDataProvider):
         aux: list[str] = []
         for symbol in tradeable_symbols:
             info = mt5.symbol_info(symbol)
-            for cur in (info.currency_margin, info.currency_profit):
+            if info is None:
+                _currencies = ["USD", "USD"]
+            else:
+                _currencies = [info.currency_margin, info.currency_profit]
+            for cur in _currencies:
                 if cur != account_currency:
                     for fx in all_fx:
                         if fx not in tradeable_symbols and account_currency in fx and cur in fx and fx not in aux:
@@ -225,8 +232,16 @@ class CSVDataProvider(IDataProvider):
             fn = os.path.join(self.csv_dir, f"{symbol}.csv")
             backtest_logger.info(f"| - PRE-BACKTEST CHECKS: Loading {symbol}.csv...")
 
-            # 1. lazy read
-            lf = pl.scan_csv(fn, has_header=False, new_columns=["date","time","open","high","low","close","tickvol","volume","spread"],)
+            # 1. lazy read — detect whether CSV has a named header row
+            with open(fn, encoding="utf-8", errors="replace") as _f:
+                _first_col = _f.readline().split(",")[0].strip().lower()
+            _has_header = _first_col in ("date", "datetime", "time")
+            lf = pl.scan_csv(
+                fn,
+                has_header=False,
+                new_columns=["date","time","open","high","low","close","tickvol","volume","spread"],
+                skip_rows=1 if _has_header else 0,
+            )
 
             # 2. Parse & cast
             lf = lf.with_columns([
